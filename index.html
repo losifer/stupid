@@ -6,7 +6,8 @@
   <title>STUPID INTELLIGENCE</title>
   <style>
     html, body { margin: 0; height: 100%; background: #05010f; overflow: hidden; }
-    canvas { display: block; }
+    canvas { display: block; cursor: grab; touch-action: none; }
+    canvas.dragging { cursor: grabbing; }
     #fallback {
       position: fixed; inset: 0; display: grid; place-items: center;
       color: #e8e8ff; font: 900 clamp(2rem, 8vw, 6rem)/1 Impact, "Arial Black", sans-serif;
@@ -208,8 +209,14 @@
     new FontLoader().load(FONT_URL, (font) => {
       const top = makeLine(font, 'STUPID', 14);
       const bottom = makeLine(font, 'INTELLIGENCE', 8);
-      top.position.y = 9;
-      bottom.position.y = -10;
+      // Stack the lines with a tight gap, centered on the group's origin so it
+      // spins around its middle.
+      const LINE_GAP = 2;
+      const topH = top.geometry.boundingBox.max.y - top.geometry.boundingBox.min.y;
+      const bottomH = bottom.geometry.boundingBox.max.y - bottom.geometry.boundingBox.min.y;
+      const total = topH + LINE_GAP + bottomH;
+      top.position.y = total / 2 - topH / 2;
+      bottom.position.y = -total / 2 + bottomH / 2;
       title.add(top, bottom);
       new THREE.Box3().setFromObject(title).getSize(titleSize);
       fitCamera();
@@ -252,8 +259,98 @@
       pointer.set(e.clientX / innerWidth - 0.5, e.clientY / innerHeight - 0.5);
     });
 
+    // --- Grab and stretch the title (rubber band) ------------------------------
+    // Dragging twists the title against a rubber band anchored at its resting
+    // pose: the further you pull, the harder it resists, up to a maximum twist.
+    // Letting go snaps it back with an overshoot and wobble; throwing it spins it
+    // off with the finger's momentum, friction slows it, and it glides home.
+    // Rotations are in screen space, so dragging sideways always twists it sideways.
+    const DRAG_SPEED = 0.009;   // radians per pixel at the start of a pull
+    const MAX_TWIST = 2.6;      // radians (~150 degrees) the band can never stretch past
+    const DRAG_LAG = 14;        // how tightly the text follows the finger (1/s): lower = heavier
+    const SPRING_K = 60;        // snap-back stiffness: higher returns faster
+    const SPRING_DAMPING = reducedMotion ? 1 : 0.3;  // damping ratio: lower = more wobble
+    const THROW_MIN = 4;        // rad/s: release faster than this counts as a throw
+    const MAX_SPIN = 20;        // rad/s cap so a wild throw stays readable
+    const AIR_DRAG = 0.9;       // throw decay proportional to speed (1/s)
+    const FRICTION = 1.5;       // constant throw deceleration (rad/s^2)
+    const HOMING_PULL = 15;     // rad/s^2 cap on the spring while gliding home from a throw
+    const spin = new THREE.Vector3();        // world-space angular velocity in rad/s
+    const fingerVel = new THREE.Vector2();   // px/s, smoothed
+    let dragging = false, thrown = false, grabX = 0, grabY = 0, lastX = 0, lastY = 0, lastMoveTime = 0;
+    const grabQuat = new THREE.Quaternion();
+    const pullTarget = new THREE.Vector2(), pullShown = new THREE.Vector2();
+    const canvas = renderer.domElement;
+
+    const qStep = new THREE.Quaternion(), qErr = new THREE.Quaternion();
+    const stepAxis = new THREE.Vector3(), springErr = new THREE.Vector3();
+
+    // Twist for a pull of (px, py) pixels. Starts at DRAG_SPEED rad/px and
+    // flattens out toward MAX_TWIST, so every extra pixel turns it less.
+    function applyPull(px, py) {
+      const pull = Math.hypot(px, py);
+      title.quaternion.copy(grabQuat);
+      if (pull === 0) return;
+      const linear = pull * DRAG_SPEED;
+      const angle = MAX_TWIST * linear / (linear + MAX_TWIST);
+      stepAxis.set(py / pull, px / pull, 0);
+      title.quaternion.premultiply(qStep.setFromAxisAngle(stepAxis, angle));
+    }
+    // Rotate by a world-space angular velocity over dt.
+    function rotateByVelocity(w, dt) {
+      const speed = w.length();
+      if (speed === 0) return;
+      title.quaternion.premultiply(qStep.setFromAxisAngle(stepAxis.copy(w).divideScalar(speed), speed * dt));
+    }
+    // Shortest rotation from the title's orientation to q, as axis * angle.
+    function rotationTo(q, out) {
+      qErr.copy(title.quaternion).invert().premultiply(q);
+      if (qErr.w < 0) qErr.set(-qErr.x, -qErr.y, -qErr.z, -qErr.w);
+      out.set(qErr.x, qErr.y, qErr.z);
+      const s = out.length();
+      return s < 1e-6 ? out.multiplyScalar(2) : out.multiplyScalar(2 * Math.atan2(s, qErr.w) / s);
+    }
+
+    canvas.addEventListener('pointerdown', (e) => {
+      dragging = true;
+      lastX = grabX = e.clientX; lastY = grabY = e.clientY;
+      lastMoveTime = performance.now();
+      fingerVel.set(0, 0);
+      thrown = false;
+      grabQuat.copy(title.quaternion);
+      pullTarget.set(0, 0);
+      pullShown.set(0, 0);
+      spin.set(0, 0, 0);
+      canvas.setPointerCapture(e.pointerId);
+      canvas.classList.add('dragging');
+    });
+    canvas.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      pullTarget.set(e.clientX - grabX, e.clientY - grabY);
+      const now = performance.now();
+      const dts = Math.max((now - lastMoveTime) / 1000, 1 / 240);
+      // Smooth the velocity estimate so a jittery last event doesn't kill the throw.
+      fingerVel.lerp(new THREE.Vector2((e.clientX - lastX) / dts, (e.clientY - lastY) / dts), 0.5);
+      lastX = e.clientX; lastY = e.clientY; lastMoveTime = now;
+    });
+    function endDrag() {
+      if (!dragging) return;
+      dragging = false;
+      // A throw leaves the band behind: the finger's speed becomes spin.
+      // Holding still before letting go means no throw.
+      if (performance.now() - lastMoveTime < 80) {
+        spin.set(fingerVel.y * DRAG_SPEED, fingerVel.x * DRAG_SPEED, 0).clampLength(0, MAX_SPIN);
+        thrown = spin.length() > THROW_MIN;
+        if (!thrown) spin.set(0, 0, 0);
+      }
+      canvas.classList.remove('dragging');
+    }
+    canvas.addEventListener('pointerup', endDrag);
+    canvas.addEventListener('pointercancel', endDrag);
+
     // --- Animate ------------------------------------------------------------
     const clock = new THREE.Clock();
+    const idleQuat = new THREE.Quaternion(), idleEuler = new THREE.Euler();
     renderer.setAnimationLoop(() => {
       const dt = Math.min(clock.getDelta(), 0.05);
       const t = clock.elapsedTime;
@@ -270,11 +367,43 @@
       // Grid scrolls forward endlessly.
       grid.position.z = (t * 40 * motion) % GRID_CELL;
 
-      // Title sways, tracks the pointer a little.
-      const targetY = Math.sin(t * 0.6) * 0.25 * motion + pointer.x * 0.4;
-      const targetX = Math.sin(t * 0.8) * 0.06 * motion + pointer.y * 0.25;
-      title.rotation.y += (targetY - title.rotation.y) * 0.05;
-      title.rotation.x += (targetX - title.rotation.x) * 0.05;
+      // Title: stretched by the drag, otherwise sprung back to the idle sway
+      // (which tracks the pointer a little).
+      if (dragging) {
+        // Trail slightly behind the finger so the pull feels weighted.
+        pullShown.lerp(pullTarget, 1 - Math.exp(-DRAG_LAG * dt));
+        applyPull(pullShown.x, pullShown.y);
+      } else {
+        const targetY = Math.sin(t * 0.6) * 0.25 * motion + pointer.x * 0.4;
+        const targetX = Math.sin(t * 0.8) * 0.06 * motion + pointer.y * 0.25;
+        idleQuat.setFromEuler(idleEuler.set(targetX, targetY, 0));
+        const speed = spin.length();
+        if (thrown && speed > THROW_MIN) {
+          // Coasting after a throw: air drag plus constant friction, no band yet.
+          const next = Math.max(speed * Math.exp(-AIR_DRAG * dt) - FRICTION * dt, 0);
+          spin.multiplyScalar(next / speed);
+        } else {
+          // Underdamped spring toward the resting pose: on release it snaps back,
+          // overshoots and wobbles like a rubber band.
+          rotationTo(idleQuat, springErr);
+          let angle = springErr.length();
+          if (thrown) {
+            // Keep going the way it was thrown rather than reversing to take the
+            // short way home.
+            if (angle > Math.PI / 2 && spin.dot(springErr) < 0) {
+              springErr.multiplyScalar((angle - Math.PI * 2) / angle);
+              angle = Math.PI * 2 - angle;
+            }
+            if (angle < 0.3) thrown = false;
+          }
+          springErr.multiplyScalar(SPRING_K);
+          // Gentle pull while gliding home from a throw, so it eases in rather than whipping.
+          if (thrown) springErr.clampLength(0, HOMING_PULL);
+          const c = 2 * SPRING_DAMPING * Math.sqrt(SPRING_K);
+          spin.addScaledVector(springErr, dt).addScaledVector(spin, -c * dt);
+        }
+        rotateByVelocity(spin, dt);
+      }
       title.position.y = Math.sin(t * 1.2) * 1.2 * motion;
 
       // Glint sweeps across the faces, then pauses.
