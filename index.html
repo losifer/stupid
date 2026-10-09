@@ -61,7 +61,7 @@
 <body>
   <div id="intro"></div>
   <div id="fallback" hidden>STUPID<br />INTELLIGENCE (SI)</div>
-  <button id="sound-toggle" type="button" aria-label="Play music" aria-pressed="false" aria-keyshortcuts="Space" title="Play/pause (Space)">
+  <button id="sound-toggle" type="button" aria-label="Play music" aria-pressed="false" aria-keyshortcuts="Space ArrowLeft" title="Play/pause (Space) · Restart (←)">
     <svg class="icon-play" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v11l9.5-5.5z" /></svg>
     <svg class="icon-pause" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 2.5h3v11h-3zM9.5 2.5h3v11h-3z" /></svg>
   </button>
@@ -91,7 +91,7 @@
     function startOnGesture(e) {
       // The toggle and the Space shortcut handle themselves (otherwise the
       // first press would start the music and then immediately pause it).
-      if (soundToggle.contains(e.target) || e.code === 'Space') return;
+      if (soundToggle.contains(e.target) || e.code === 'Space' || e.code === 'ArrowLeft') return;
       stopWaitingForGesture();
       music.play().catch(() => {});
     }
@@ -99,13 +99,22 @@
       removeEventListener('pointerdown', startOnGesture, true);
       removeEventListener('keydown', startOnGesture, true);
     }
-    // Space toggles play/pause from anywhere on the page. A focused button or
-    // form field keeps its own Space behavior, so we don't double-toggle.
+    // Keyboard shortcuts from anywhere on the page: Space toggles play/pause,
+    // Left arrow restarts the song from the top (and plays it). A focused button
+    // or form field keeps its own Space behavior, so we don't double-toggle.
     addEventListener('keydown', (e) => {
-      if (e.code !== 'Space' || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
-      if (e.target.closest('button, a, input, textarea, select, [contenteditable]')) return;
-      e.preventDefault();
-      soundToggle.click();
+      if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.code === 'Space') {
+        if (e.target.closest('button, a, input, textarea, select, [contenteditable]')) return;
+        e.preventDefault();
+        soundToggle.click();
+      } else if (e.code === 'ArrowLeft') {
+        if (e.target.closest('input, textarea, select, [contenteditable]')) return;
+        e.preventDefault();
+        stopWaitingForGesture();
+        music.currentTime = 0;
+        music.play().catch(() => {});
+      }
     });
     music.play().catch(() => {
       addEventListener('pointerdown', startOnGesture, true);
