@@ -61,7 +61,7 @@
 <body>
   <div id="intro"></div>
   <div id="fallback" hidden>STUPID<br />INTELLIGENCE (SI)</div>
-  <button id="sound-toggle" type="button" aria-label="Play music" aria-pressed="false">
+  <button id="sound-toggle" type="button" aria-label="Play music" aria-pressed="false" aria-keyshortcuts="Space" title="Play/pause (Space)">
     <svg class="icon-play" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v11l9.5-5.5z" /></svg>
     <svg class="icon-pause" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 2.5h3v11h-3zM9.5 2.5h3v11h-3z" /></svg>
   </button>
@@ -89,7 +89,9 @@
       if (music.paused) music.play().catch(() => {}); else music.pause();
     });
     function startOnGesture(e) {
-      if (soundToggle.contains(e.target)) return;
+      // The toggle and the Space shortcut handle themselves (otherwise the
+      // first press would start the music and then immediately pause it).
+      if (soundToggle.contains(e.target) || e.code === 'Space') return;
       stopWaitingForGesture();
       music.play().catch(() => {});
     }
@@ -97,6 +99,14 @@
       removeEventListener('pointerdown', startOnGesture, true);
       removeEventListener('keydown', startOnGesture, true);
     }
+    // Space toggles play/pause from anywhere on the page. A focused button or
+    // form field keeps its own Space behavior, so we don't double-toggle.
+    addEventListener('keydown', (e) => {
+      if (e.code !== 'Space' || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.target.closest('button, a, input, textarea, select, [contenteditable]')) return;
+      e.preventDefault();
+      soundToggle.click();
+    });
     music.play().catch(() => {
       addEventListener('pointerdown', startOnGesture, true);
       addEventListener('keydown', startOnGesture, true);
