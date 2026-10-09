@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>STUPID INTELLIGENCE</title>
   <style>
     html, body { margin: 0; height: 100%; background: #05010f; overflow: hidden; }
@@ -15,6 +15,39 @@
       text-shadow: 0 0 20px #ff2bd6;
     }
     #fallback[hidden] { display: none; }
+    /* Black curtain over everything on load; fades out once the title is ready. */
+    #intro {
+      position: fixed; inset: 0; z-index: 2; background: #000; pointer-events: none;
+      transition: opacity 2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    #intro.done { opacity: 0; }
+    #sound-toggle {
+      position: fixed; z-index: 1;
+      top: max(16px, env(safe-area-inset-top)); right: max(16px, env(safe-area-inset-right));
+      width: 40px; height: 40px; padding: 0; display: grid; place-items: center;
+      border: 1px solid rgba(232, 222, 255, 0.35); border-radius: 50%;
+      background: rgba(20, 4, 48, 0.55); color: rgba(232, 222, 255, 0.85);
+      box-shadow: 0 0 10px rgba(255, 43, 214, 0.35);
+      backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+      cursor: pointer; transition: color 0.15s, border-color 0.15s, box-shadow 0.15s;
+    }
+    #sound-toggle:hover, #sound-toggle:focus-visible {
+      color: #fff; border-color: rgba(255, 43, 214, 0.9);
+      box-shadow: 0 0 16px rgba(255, 43, 214, 0.7);
+    }
+    #sound-toggle:focus-visible { outline: 2px solid #2be8ff; outline-offset: 3px; }
+    #sound-toggle svg { width: 16px; height: 16px; fill: currentColor; }
+    #sound-toggle .icon-pause, #sound-toggle[aria-pressed="true"] .icon-play { display: none; }
+    #sound-toggle[aria-pressed="true"] .icon-pause { display: block; }
+    footer {
+      position: fixed; left: 0; right: 0; bottom: 0;
+      padding: 0 16px max(16px, env(safe-area-inset-bottom));
+      text-align: center; pointer-events: none;
+      color: rgba(232, 222, 255, 0.7);
+      font: 500 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+      letter-spacing: 0.04em;
+      text-shadow: 0 0 8px rgba(255, 43, 214, 0.6);
+    }
   </style>
   <script type="importmap">
     {
@@ -26,7 +59,14 @@
   </script>
 </head>
 <body>
-  <div id="fallback" hidden>STUPID<br />INTELLIGENCE</div>
+  <div id="intro"></div>
+  <div id="fallback" hidden>STUPID<br />INTELLIGENCE (SI)</div>
+  <button id="sound-toggle" type="button" aria-label="Play music" aria-pressed="false">
+    <svg class="icon-play" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v11l9.5-5.5z" /></svg>
+    <svg class="icon-pause" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 2.5h3v11h-3zM9.5 2.5h3v11h-3z" /></svg>
+  </button>
+  <audio id="music" src="sound/Gated%20Minor%20Chords.mp3" loop preload="auto"></audio>
+  <footer>&copy; 2026 - Built using Stupid Intelligence (SI)</footer>
 
   <script type="module">
     import * as THREE from 'three';
@@ -36,6 +76,38 @@
     import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
     import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
     import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+    // --- Music toggle ---------------------------------------------------------
+    // Plays by default. Most browsers block sound until the visitor interacts,
+    // so if autoplay is refused, start on the first click, tap or key press
+    // anywhere (unless that interaction is the toggle itself).
+    const music = document.getElementById('music');
+    const soundToggle = document.getElementById('sound-toggle');
+    music.volume = 0.6;
+    soundToggle.addEventListener('click', () => {
+      stopWaitingForGesture();
+      if (music.paused) music.play().catch(() => {}); else music.pause();
+    });
+    function startOnGesture(e) {
+      if (soundToggle.contains(e.target)) return;
+      stopWaitingForGesture();
+      music.play().catch(() => {});
+    }
+    function stopWaitingForGesture() {
+      removeEventListener('pointerdown', startOnGesture, true);
+      removeEventListener('keydown', startOnGesture, true);
+    }
+    music.play().catch(() => {
+      addEventListener('pointerdown', startOnGesture, true);
+      addEventListener('keydown', startOnGesture, true);
+    });
+    function syncSoundToggle() {
+      const playing = !music.paused;
+      soundToggle.setAttribute('aria-pressed', String(playing));
+      soundToggle.setAttribute('aria-label', playing ? 'Pause music' : 'Play music');
+    }
+    music.addEventListener('play', syncSoundToggle);
+    music.addEventListener('pause', syncSoundToggle);
 
     const FONT_URL = 'https://cdn.jsdelivr.net/npm/three@0.169.0/examples/fonts/helvetiker_bold.typeface.json';
     const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -208,7 +280,7 @@
 
     new FontLoader().load(FONT_URL, (font) => {
       const top = makeLine(font, 'STUPID', 14);
-      const bottom = makeLine(font, 'INTELLIGENCE', 8);
+      const bottom = makeLine(font, 'INTELLIGENCE (SI)', 8);
       // Stack the lines with a tight gap, centered on the group's origin so it
       // spins around its middle.
       const LINE_GAP = 2;
@@ -220,9 +292,28 @@
       title.add(top, bottom);
       new THREE.Box3().setFromObject(title).getSize(titleSize);
       fitCamera();
+      startIntro();
     }, undefined, () => {
       document.getElementById('fallback').hidden = false;
+      startIntro();
     });
+
+    // --- Intro: fade up from black while the title scales in -----------------
+    const INTRO_DURATION = 2.2;  // seconds for the title to grow to full size
+    const INTRO_FROM = 0.35;     // starting scale
+    let introStart = null;
+    function startIntro() {
+      if (introStart !== null) return;
+      introStart = clock.elapsedTime;
+      document.getElementById('intro').classList.add('done');
+    }
+    // Don't leave visitors staring at black if the font is slow.
+    setTimeout(startIntro, 4000);
+    // Ease out with a slight overshoot, so it lands with a little punch.
+    function easeOutBack(k) {
+      const c = 1.4;
+      return 1 + (c + 1) * Math.pow(k - 1, 3) + c * Math.pow(k - 1, 2);
+    }
 
     // --- Post-processing: bloom for the neon glow --------------------------
     const composer = new EffectComposer(renderer);
@@ -405,6 +496,10 @@
         rotateByVelocity(spin, dt);
       }
       title.position.y = Math.sin(t * 1.2) * 1.2 * motion;
+      if (introStart !== null && !reducedMotion) {
+        const k = Math.min((t - introStart) / INTRO_DURATION, 1);
+        title.scale.setScalar(INTRO_FROM + (1 - INTRO_FROM) * easeOutBack(k));
+      }
 
       // Glint sweeps across the faces, then pauses.
       glint.value = ((t * 0.5) % 3) * 1.6 - 1.5;
